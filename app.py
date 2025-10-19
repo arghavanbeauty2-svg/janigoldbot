@@ -95,7 +95,7 @@ if __name__ == "__main__":
     load_data()
     # ست webhook
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://your-app-name.janigoldbot.com/webhook")
+    bot.set_webhook(url=f"https://janiGOLDbot.onrender.com/webhook")
     
     threading.Thread(target=run_scheduler, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
