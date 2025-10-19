@@ -1,32 +1,41 @@
-from flask import Flask, request, abort
-import telebot
-import requests
-import json
 import os
-import schedule
-import threading
-import time
+import json
+import logging
 from datetime import datetime, time as dtime, date
 from collections import deque
-import logging
+from flask import Flask, request, jsonify
+import telebot
+import requests
+import threading
+import schedule
+import time
 
-app = Flask(__name__)
+# تنظیمات لاگینگ
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-# تنظیم لاگینگ
-logging.basicConfig(filename='goldbot.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
+# خواندن متغیرهای محیطی
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_KEY = os.getenv('API_KEY')
-if not BOT_TOKEN or not API_KEY:
-    logging.error("BOT_TOKEN or API_KEY not set")
-    raise ValueError("Missing env vars")
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'https://janigoldbot.onrender.com/webhook')
 
+if not BOT_TOKEN or not API_KEY:
+    logging.error("BOT_TOKEN یا API_KEY تنظیم نشده است.")
+    raise ValueError("لطفاً متغیرهای محیطی را در Render تنظیم کنید.")
+
+# راه‌اندازی Flask و Telebot
+app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# داده‌های جهانی
 prices = deque(maxlen=30)
 daily_data = {}
 last_price = None
-chat_id = None  # برای چند کاربر، به dict تغییر دهید
+active_chats = set()  # پشتیبانی از چند کاربر
 
+# === توابع مدیریت داده ===
 def load_data():
     global daily_data, prices
     daily_data = {}
@@ -34,18 +43,18 @@ def load_data():
         try:
             with open('daily_data.json', 'r', encoding='utf-8') as f:
                 daily_data = json.load(f)
-            logging.info("Daily data loaded successfully")
+            logging.info("داده‌های روزانه بارگذاری شدند.")
         except Exception as e:
-            logging.error(f"Error loading daily_data: {e}")
-            daily_data = {}
+            logging.error(f"خطا در بارگذاری daily_data: {e}")
+
     if os.path.exists('prices.json'):
         try:
             with open('prices.json', 'r', encoding='utf-8') as f:
                 price_list = json.load(f)
                 prices.extend(price_list)
-            logging.info("Prices loaded successfully")
+            logging.info("قیمت‌های قبلی بارگذاری شدند.")
         except Exception as e:
-            logging.error(f"Error loading prices: {e}")
+            logging.error(f"خطا در بارگذاری prices: {e}")
 
 def save_data():
     try:
@@ -53,10 +62,11 @@ def save_data():
             json.dump(daily_data, f, ensure_ascii=False)
         with open('prices.json', 'w', encoding='utf-8') as f:
             json.dump(list(prices), f)
-        logging.info("Data saved successfully")
+        logging.info("داده‌ها ذخیره شدند.")
     except Exception as e:
-        logging.error(f"Error saving data: {e}")
+        logging.error(f"خطا در ذخیره‌سازی داده: {e}")
 
+# === دریافت قیمت از BrsApi.ir ===
 def get_gold_price():
     url = f"https://BrsApi.ir/Api/Tsetmc/AllSymbols.php?key={API_KEY}"
     headers = {
@@ -68,24 +78,19 @@ def get_gold_price():
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, list):
-            logging.error("API response is not a list")
+            logging.error("پاسخ API لیست نیست.")
             return None
         for item in data:
             if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                 price_str = item.get("price", "0").replace(",", "")
-                try:
-                    price = int(price_str)
-                    logging.info(f"Gold price fetched: {price}")
-                    return price
-                except ValueError:
-                    logging.error("Invalid price format")
-                    return None
-        logging.warning("Symbol not found in API response")
+                return int(price_str)
+        logging.warning("نماد طلای آبشده یافت نشد.")
         return None
     except Exception as e:
-        logging.error(f"Error in get_gold_price: {e}")
+        logging.error(f"خطا در دریافت قیمت: {e}")
         return None
 
+# === به‌روزرسانی داده‌های روزانه ===
 def update_daily_data(price):
     today = str(date.today())
     if today not in daily_data:
@@ -94,8 +99,8 @@ def update_daily_data(price):
         daily_data[today]["high"] = max(daily_data[today]["high"], price)
         daily_data[today]["low"] = min(daily_data[today]["low"], price)
         daily_data[today]["close"] = price
-    logging.info(f"Daily data updated for {today}")
 
+# === محاسبه Pivot Point ===
 def calculate_pivot_levels():
     today = str(date.today())
     if today not in daily_data:
@@ -111,35 +116,41 @@ def calculate_pivot_levels():
         "s2": pivot - (high - low)
     }
 
+# === بررسی نزدیکی به سطوح Pivot ===
 def is_near_pivot_level(price, levels, threshold=300):
     if not levels:
         return False
-    for val in levels.values():
-        if abs(price - val) <= threshold:
-            return True
-    return False
+    return any(abs(price - val) <= threshold for val in levels.values())
 
+# === بررسی بازه‌های فعالیت ===
 def is_in_active_hours():
     now = datetime.now().time()
-    return dtime(11, 0) <= now <= dtime(19, 0) or now >= dtime(22, 30) or now <= dtime(6, 30)
+    return (dtime(11, 0) <= now <= dtime(19, 0)) or (now >= dtime(22, 30) or now <= dtime(6, 30))
 
-def analyze_and_send(is_manual=False):
-    global chat_id, last_price
-    if chat_id is None:
-        logging.warning("No chat_id set")
+# === تحلیل و ارسال سیگنال به همه کاربران فعال ===
+def analyze_and_send(is_manual=False, manual_chat_id=None):
+    global last_price
+    if not active_chats and not is_manual:
+        logging.info("هیچ کاربر فعالی وجود ندارد.")
         return
-    if not is_manual and not is_in_active_hours():
-        logging.info("Outside active hours")
-        return
+
     price = get_gold_price()
     if price is None:
-        bot.send_message(chat_id, "❌ خطای دریافت قیمت از API")
+        msg = "❌ خطای دریافت قیمت از API"
+        if is_manual and manual_chat_id:
+            bot.send_message(manual_chat_id, msg)
+        else:
+            for cid in active_chats:
+                bot.send_message(cid, msg)
         return
+
     update_daily_data(price)
     save_data()
     prices.append(price)
     pivot_levels = calculate_pivot_levels()
-    if is_manual:
+
+    # ارسال پاسخ دستی
+    if is_manual and manual_chat_id:
         msg = f"📊 قیمت دستی: {price:,}\n"
         if pivot_levels:
             msg += (
@@ -149,10 +160,13 @@ def analyze_and_send(is_manual=False):
             )
         else:
             msg += "⏳ داده‌های روزانه کافی نیست."
-        bot.send_message(chat_id, msg, parse_mode="Markdown")
+        bot.send_message(manual_chat_id, msg, parse_mode="Markdown")
         return
+
+    # منطق اصلی: تغییر > 0.2% یا نزدیکی به Pivot
     significant_change = False
     near_pivot = is_near_pivot_level(price, pivot_levels, 300)
+
     if last_price is None:
         significant_change = True
         last_price = price
@@ -161,73 +175,86 @@ def analyze_and_send(is_manual=False):
         if change_percent >= 0.2:
             significant_change = True
             last_price = price
+
     if significant_change or near_pivot:
         msg = f"📊 قیمت فعلی: {price:,}\n"
         if pivot_levels:
             msg += f"📌 Pivot: {pivot_levels['pivot']:,.0f}"
-        bot.send_message(chat_id, msg, parse_mode="Markdown")
-        logging.info("Message sent")
+        for cid in active_chats:
+            try:
+                bot.send_message(cid, msg, parse_mode="Markdown")
+            except Exception as e:
+                logging.error(f"خطا در ارسال به {cid}: {e}")
 
-# هندلرها
+# === هندلرهای تلگرام ===
 @bot.message_handler(commands=['start'])
 def start(message):
-    global chat_id
-    chat_id = message.chat.id
-    logging.info(f"Start command received from chat_id: {chat_id}")
+    active_chats.add(message.chat.id)
+    logging.info(f"کاربر جدید: {message.chat.id}")
     bot.reply_to(message, "ربات فرازگلد فعال شد! ✅\nدستور /price برای استعلام دستی.\nدستور /stats برای آمار روزانه.")
 
 @bot.message_handler(commands=['price'])
 def manual_price(message):
-    logging.info("Price command received")
-    analyze_and_send(is_manual=True)
+    logging.info(f"درخواست دستی قیمت از {message.chat.id}")
+    analyze_and_send(is_manual=True, manual_chat_id=message.chat.id)
 
 @bot.message_handler(commands=['stats'])
 def stats(message):
-    logging.info("Stats command received")
     today = str(date.today())
     if today in daily_data:
         d = daily_data[today]
         msg = f"📈 آمار امروز:\nبالاترین: {d['high']:,}\nپایین‌ترین: {d['low']:,}\nآخرین: {d['close']:,}"
-        bot.reply_to(message, msg)
     else:
-        bot.reply_to(message, "⏳ هنوز داده‌ای برای امروز موجود نیست.")
+        msg = "⏳ هنوز داده‌ای برای امروز موجود نیست."
+    bot.reply_to(message, msg)
 
-# روت webhook
+# === روت‌های Flask ===
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
-        logging.info(f"Webhook received: {json_string}")
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return '', 200
     else:
-        logging.warning("Invalid content type for webhook")
-        abort(403)
+        logging.warning("درخواست webhook با content-type نامعتبر")
+        return 'Bad Request', 400
 
-# روت health check برای ping و جلوگیری از sleep
-@app.route('/')
+@app.route('/health')
 def health():
-    logging.info("Health check requested")
     return "Bot is alive!", 200
 
+@app.route('/status')
+def status():
+    return jsonify({
+        "active_chats_count": len(active_chats),
+        "last_price": last_price,
+        "today_data": daily_data.get(str(date.today()), None)
+    })
+
+# === زمان‌بندی چک خودکار ===
 def run_scheduler():
-    logging.info("Scheduler started")
     schedule.every(2).minutes.do(analyze_and_send)
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-# بارگذاری داده‌ها، ست webhook و شروع scheduler (خارج از __main__ برای gunicorn)
-load_data()
-bot.remove_webhook()
-try:
-    bot.set_webhook(url="https://janiGOLDbot.onrender.com/webhook")
-    logging.info("Webhook set successfully")
-except Exception as e:
-    logging.error(f"Error setting webhook: {e}")
-
-threading.Thread(target=run_scheduler, daemon=True).start()
-
+# === راه‌اندازی اولیه ===
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    # بارگذاری داده‌ها
+    load_data()
+    
+    # تنظیم webhook
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=WEBHOOK_URL)
+        logging.info(f"Webhook با موفقیت تنظیم شد: {WEBHOOK_URL}")
+    except Exception as e:
+        logging.error(f"خطا در تنظیم webhook: {e}")
+    
+    # راه‌اندازی scheduler در ترد جداگانه
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    
+    # اجرای Flask
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
