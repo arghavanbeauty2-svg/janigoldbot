@@ -34,21 +34,28 @@ def load_data():
         try:
             with open('daily_data.json', 'r', encoding='utf-8') as f:
                 daily_data = json.load(f)
-        except:
+            logging.info("Daily data loaded successfully")
+        except Exception as e:
+            logging.error(f"Error loading daily_data: {e}")
             daily_data = {}
     if os.path.exists('prices.json'):
         try:
             with open('prices.json', 'r', encoding='utf-8') as f:
                 price_list = json.load(f)
                 prices.extend(price_list)
-        except:
-            pass
+            logging.info("Prices loaded successfully")
+        except Exception as e:
+            logging.error(f"Error loading prices: {e}")
 
 def save_data():
-    with open('daily_data.json', 'w', encoding='utf-8') as f:
-        json.dump(daily_data, f, ensure_ascii=False)
-    with open('prices.json', 'w', encoding='utf-8') as f:
-        json.dump(list(prices), f)
+    try:
+        with open('daily_data.json', 'w', encoding='utf-8') as f:
+            json.dump(daily_data, f, ensure_ascii=False)
+        with open('prices.json', 'w', encoding='utf-8') as f:
+            json.dump(list(prices), f)
+        logging.info("Data saved successfully")
+    except Exception as e:
+        logging.error(f"Error saving data: {e}")
 
 def get_gold_price():
     url = f"https://BrsApi.ir/Api/Tsetmc/AllSymbols.php?key={API_KEY}"
@@ -166,14 +173,17 @@ def analyze_and_send(is_manual=False):
 def start(message):
     global chat_id
     chat_id = message.chat.id
+    logging.info(f"Start command received from chat_id: {chat_id}")
     bot.reply_to(message, "ربات فرازگلد فعال شد! ✅\nدستور /price برای استعلام دستی.\nدستور /stats برای آمار روزانه.")
 
 @bot.message_handler(commands=['price'])
 def manual_price(message):
+    logging.info("Price command received")
     analyze_and_send(is_manual=True)
 
 @bot.message_handler(commands=['stats'])
 def stats(message):
+    logging.info("Stats command received")
     today = str(date.today())
     if today in daily_data:
         d = daily_data[today]
@@ -187,30 +197,36 @@ def stats(message):
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
+        logging.info(f"Webhook received: {json_string}")
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return '', 200
     else:
+        logging.warning("Invalid content type for webhook")
         abort(403)
 
 # روت health check برای ping و جلوگیری از sleep
 @app.route('/')
 def health():
+    logging.info("Health check requested")
     return "Bot is alive!", 200
 
 def run_scheduler():
+    logging.info("Scheduler started")
     schedule.every(2).minutes.do(analyze_and_send)
     while True:
         schedule.run_pending()
         time.sleep(1)
 
-# بارگذاری داده‌ها و ست webhook (اینجا خارج از __main__ برای اجرا در gunicorn)
+# بارگذاری داده‌ها، ست webhook و شروع scheduler (خارج از __main__ برای gunicorn)
 load_data()
 bot.remove_webhook()
-bot.set_webhook(url="https://janiGOLDbot.onrender.com/webhook")
-logging.info("Webhook set successfully")
+try:
+    bot.set_webhook(url="https://janiGOLDbot.onrender.com/webhook")
+    logging.info("Webhook set successfully")
+except Exception as e:
+    logging.error(f"Error setting webhook: {e}")
 
-# شروع scheduler
 threading.Thread(target=run_scheduler, daemon=True).start()
 
 if __name__ == "__main__":
