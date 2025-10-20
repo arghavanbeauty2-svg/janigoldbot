@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime, time as dtime, date, timedelta
+from datetime import datetime, time as dtime, date
 from collections import deque
 from flask import Flask, request, jsonify
 import telebot
@@ -34,7 +34,6 @@ prices = deque(maxlen=30)
 daily_data = {}
 last_price = None
 active_chats = set()  # پشتیبانی از چند کاربر
-signal_messages = {}  # ذخیره message_id و قیمت اولیه سیگنال برای هر چت: {chat_id: {'message_id': id, 'initial_price': price}}
 
 # === توابع مدیریت داده ===
 def load_data():
@@ -128,26 +127,6 @@ def is_in_active_hours():
     now = datetime.now().time()
     return (dtime(11, 0) <= now <= dtime(19, 0)) or (now >= dtime(22, 30) or now <= dtime(6, 30))
 
-# === حذف پیام بعد از 6 ساعت ===
-def delete_message_after_delay(chat_id, message_id):
-    time.sleep(6 * 3600)  # 6 ساعت
-    try:
-        bot.delete_message(chat_id, message_id)
-        logging.info(f"پیام سیگنال {message_id} حذف شد.")
-    except Exception as e:
-        logging.error(f"خطا در حذف پیام {message_id}: {e}")
-
-# === محاسبه سود/ضرر ===
-def calculate_profit_loss(initial_price, final_price):
-    change = final_price - initial_price
-    change_percent = (change / initial_price) * 100 if initial_price != 0 else 0
-    if change > 0:
-        return f"سود: {change:,} ({change_percent:.2f}%)"
-    elif change < 0:
-        return f"ضرر: {abs(change):,} ({abs(change_percent):.2f}%)"
-    else:
-        return "بدون تغییر"
-
 # === تحلیل و ارسال سیگنال ===
 def analyze_and_send(is_manual=False, manual_chat_id=None):
     global last_price
@@ -180,10 +159,9 @@ def analyze_and_send(is_manual=False, manual_chat_id=None):
         bot.send_message(manual_chat_id, msg, parse_mode="Markdown")
         return
 
-    # منطق اصلی سیگنال
+    # منطق اصلی
     significant_change = False
     near_pivot = is_near_pivot_level(price, pivot_levels, 300)
-
     if last_price is None:
         significant_change = True
         last_price = price
@@ -200,8 +178,9 @@ def analyze_and_send(is_manual=False, manual_chat_id=None):
         for cid in active_chats:
             try:
                 sent_msg = bot.send_message(cid, msg, parse_mode="Markdown")
+                # ذخیره message_id برای reply سود/ضرر
                 signal_messages[cid] = {'message_id': sent_msg.message_id, 'initial_price': price}
-                # شروع تایمر برای حذف سیگنال بعد از 6 ساعت
+                # شروع تایمر برای حذف پیام بعد از 6 ساعت
                 threading.Thread(target=delete_message_after_delay, args=(cid, sent_msg.message_id)).start()
             except Exception as e:
                 logging.error(f"خطا در ارسال به {cid}: {e}")
@@ -229,6 +208,7 @@ def manual_price(message):
 
 @bot.message_handler(commands=['stats'])
 def stats(message):
+    logging.info(f"درخواست آمار از {message.chat.id}")
     today = str(date.today())
     if today in daily_data:
         d = daily_data[today]
