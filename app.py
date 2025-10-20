@@ -45,7 +45,7 @@ def load_data():
                 daily_data = json.load(f)
             logging.info("داده‌های روزانه بارگذاری شدند.")
         except Exception as e:
-            logging.error(f"خطا در بارگذاری daily_ {e}")
+            logging.error(f"خطا در بارگذاری daily_data: {e}")
 
     if os.path.exists('prices.json'):
         try:
@@ -93,7 +93,7 @@ def get_gold_price():
 # === به‌روزرسانی داده‌های روزانه ===
 def update_daily_data(price):
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         daily_data[today] = {"high": price, "low": price, "close": price}
     else:
         daily_data[today]["high"] = max(daily_data[today]["high"], price)
@@ -103,7 +103,7 @@ def update_daily_data(price):
 # === محاسبه Pivot Point ===
 def calculate_pivot_levels():
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         return None
     d = daily_data[today]
     high, low, close = d["high"], d["low"], d["close"]
@@ -196,8 +196,9 @@ def manual_price(message):
 
 @bot.message_handler(commands=['stats'])
 def stats(message):
+    logging.info(f"درخواست آمار از {message.chat.id}")
     today = str(date.today())
-    if today in daily_
+    if today in daily_data:
         d = daily_data[today]
         msg = f"📈 آمار امروز:\nبالاترین: {d['high']:,}\nپایین‌ترین: {d['low']:,}\nآخرین: {d['close']:,}"
     else:
@@ -239,16 +240,16 @@ def run_scheduler():
         time.sleep(1)
 
 # === راه‌اندازی اولیه ===
+load_data()
+try:
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
+except Exception as e:
+    logging.error(f"خطا در تنظیم webhook: {e}")
+    
+threading.Thread(target=run_scheduler, daemon=True).start()
+
 if __name__ == "__main__":
-    load_data()
-    try:
-        bot.remove_webhook()
-        bot.set_webhook(url=WEBHOOK_URL)
-        logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
-    except Exception as e:
-        logging.error(f"خطا در تنظیم webhook: {e}")
-    
-    threading.Thread(target=run_scheduler, daemon=True).start()
-    
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
