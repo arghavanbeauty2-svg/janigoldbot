@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime, time as dtime, date
+from datetime import datetime, time as dtime, date, timedelta
 from collections import deque
 from flask import Flask, request, jsonify
 import telebot
@@ -33,7 +33,8 @@ bot = telebot.TeleBot(BOT_TOKEN)
 prices = deque(maxlen=30)
 daily_data = {}
 last_price = None
-active_chats = set()
+active_chats = set()  # پشتیبانی از چند کاربر
+signal_messages = {}  # ذخیره message_id و قیمت اولیه سیگنال برای هر چت: {chat_id: {'message_id': id, 'initial_price': price}}
 
 # === توابع مدیریت داده ===
 def load_data():
@@ -45,7 +46,7 @@ def load_data():
                 daily_data = json.load(f)
             logging.info("داده‌های روزانه بارگذاری شدند.")
         except Exception as e:
-            logging.error(f"خطا در بارگذاری daily_ {e}")
+            logging.error(f"خطا در بارگذاری daily_data: {e}")
 
     if os.path.exists('prices.json'):
         try:
@@ -80,7 +81,7 @@ def get_gold_price():
         if not isinstance(data, list):
             logging.error("پاسخ API لیست نیست.")
             return None
-        for item in 
+        for item in data:
             if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                 price_str = item.get("price", "0").replace(",", "")
                 return int(price_str)
@@ -93,7 +94,7 @@ def get_gold_price():
 # === به‌روزرسانی داده‌های روزانه ===
 def update_daily_data(price):
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         daily_data[today] = {"high": price, "low": price, "close": price}
     else:
         daily_data[today]["high"] = max(daily_data[today]["high"], price)
@@ -103,7 +104,7 @@ def update_daily_data(price):
 # === محاسبه Pivot Point ===
 def calculate_pivot_levels():
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         return None
     d = daily_data[today]
     high, low, close = d["high"], d["low"], d["close"]
@@ -126,6 +127,26 @@ def is_near_pivot_level(price, levels, threshold=300):
 def is_in_active_hours():
     now = datetime.now().time()
     return (dtime(11, 0) <= now <= dtime(19, 0)) or (now >= dtime(22, 30) or now <= dtime(6, 30))
+
+# === حذف پیام بعد از 6 ساعت ===
+def delete_message_after_delay(chat_id, message_id):
+    time.sleep(6 * 3600)  # 6 ساعت
+    try:
+        bot.delete_message(chat_id, message_id)
+        logging.info(f"پیام سیگنال {message_id} حذف شد.")
+    except Exception as e:
+        logging.error(f"خطا در حذف پیام {message_id}: {e}")
+
+# === محاسبه سود/ضرر ===
+def calculate_profit_loss(initial_price, final_price):
+    change = final_price - initial_price
+    change_percent = (change / initial_price) * 100 if initial_price != 0 else 0
+    if change > 0:
+        return f"سود: {change:,} ({change_percent:.2f}%)"
+    elif change < 0:
+        return f"ضرر: {abs(change):,} ({abs(change_percent):.2f}%)"
+    else:
+        return "بدون تغییر"
 
 # === تحلیل و ارسال سیگنال ===
 def analyze_and_send(is_manual=False, manual_chat_id=None):
@@ -159,6 +180,7 @@ def analyze_and_send(is_manual=False, manual_chat_id=None):
         bot.send_message(manual_chat_id, msg, parse_mode="Markdown")
         return
 
+    # منطق اصلی سیگنال
     significant_change = False
     near_pivot = is_near_pivot_level(price, pivot_levels, 300)
 
@@ -177,9 +199,21 @@ def analyze_and_send(is_manual=False, manual_chat_id=None):
             msg += f"📌 Pivot: {pivot_levels['pivot']:,.0f}"
         for cid in active_chats:
             try:
-                bot.send_message(cid, msg, parse_mode="Markdown")
+                sent_msg = bot.send_message(cid, msg, parse_mode="Markdown")
+                signal_messages[cid] = {'message_id': sent_msg.message_id, 'initial_price': price}
+                # شروع تایمر برای حذف سیگنال بعد از 6 ساعت
+                threading.Thread(target=delete_message_after_delay, args=(cid, sent_msg.message_id)).start()
             except Exception as e:
                 logging.error(f"خطا در ارسال به {cid}: {e}")
+    else:
+        # اگر شرط سیگنال تمام شد، سود/ضرر را محاسبه و reply کن
+        for cid in list(signal_messages.keys()):
+            if cid in signal_messages:
+                initial_price = signal_messages[cid]['initial_price']
+                profit_loss = calculate_profit_loss(initial_price, price)
+                msg_id = signal_messages[cid]['message_id']
+                bot.reply_to_message(cid, msg_id, f"اتمام سیگنال: {profit_loss}")
+                del signal_messages[cid]  # حذف از لیست بعد از اتمام
 
 # === هندلرهای تلگرام ===
 @bot.message_handler(commands=['start'])
@@ -203,17 +237,15 @@ def stats(message):
         msg = "⏳ هنوز داده‌ای برای امروز موجود نیست."
     bot.reply_to(message, msg)
 
-# === روت‌های Flask (حیاتی برای Render و UptimeRobot) ===
+# === روت‌های Flask ===
 @app.route('/')
-def root_health():
-    return "OK", 200
-
-@app.route('/health')
 def health():
+    """Health check برای Render و UptimeRobot"""
     return "OK", 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    """پردازش درخواست‌های webhook از تلگرام"""
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
@@ -225,6 +257,7 @@ def webhook():
 
 @app.route('/status')
 def status():
+    """وضعیت داخلی ربات (اختیاری)"""
     return jsonify({
         "active_chats_count": len(active_chats),
         "last_price": last_price,
@@ -239,16 +272,16 @@ def run_scheduler():
         time.sleep(1)
 
 # === راه‌اندازی اولیه ===
+load_data()
+try:
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
+except Exception as e:
+    logging.error(f"خطا در تنظیم webhook: {e}")
+
+threading.Thread(target=run_scheduler, daemon=True).start()
+
 if __name__ == "__main__":
-    load_data()
-    try:
-        bot.remove_webhook()
-        bot.set_webhook(url=WEBHOOK_URL)
-        logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
-    except Exception as e:
-        logging.error(f"خطا در تنظیم webhook: {e}")
-    
-    threading.Thread(target=run_scheduler, daemon=True).start()
-    
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
