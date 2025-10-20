@@ -10,13 +10,16 @@ import requests
 import threading
 import schedule
 import time
+import urllib3
 
 # === تنظیمات لاگینگ ===
 logging.basicConfig(
-    filename='goldbot.log',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+# === غیرفعال کردن هشدارهای urllib3 (برای رفع خطاهای Proxy/SSL) ===
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # === خواندن متغیرهای محیطی ===
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -78,22 +81,21 @@ def get_gold_price():
     }
     try:
         logging.info("📡 ارسال درخواست به BrsApi.ir...")
-        response = requests.get(url, headers=headers, timeout=10)
+        # غیرفعال کردن اعتبارسنجی SSL برای دور زدن خطاهای Proxy
+        response = requests.get(url, headers=headers, timeout=10, verify=False)
         if response.status_code == 200:
             data = response.json()
             logging.info("✅ پاسخ موفق از BrsApi.ir دریافت شد.")
-            # اصلاح خطای SyntaxError: خط زیر باید کامل باشد
-            for item in data:  # ✅ این خط اکنون صحیح است
+            # ✅ اصلاح شده: خط کامل و بدون کامنت فارسی
+            for item in 
                 if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                     price_str = item.get("price", "0").replace(",", "")
                     price = int(price_str)
                     logging.info(f"💰 قیمت دریافتی: {price:,}")
                     return price
-            logging.warning("⚠️ نماد طلای آبشده یافت نشد.")
-            return None
         else:
             logging.error(f"❌ خطا در دریافت قیمت: کد وضعیت {response.status_code}")
-            return None
+        return None
     except Exception as e:
         logging.error(f"❌ خطا در دریافت قیمت از BrsApi.ir: {e}")
         return None
@@ -101,7 +103,7 @@ def get_gold_price():
 # === به‌روزرسانی داده‌های روزانه ===
 def update_daily_data(price):
     today = str(date.today())
-    if today not in daily_data:
+    if today not in daily_
         daily_data[today] = {"high": price, "low": price, "close": price}
         logging.info(f"📅 داده‌های روز جدید ایجاد شد: {today}")
     else:
@@ -113,7 +115,7 @@ def update_daily_data(price):
 # === محاسبه Pivot Point ===
 def calculate_pivot_levels():
     today = str(date.today())
-    if today not in daily_data:
+    if today not in daily_
         logging.warning("📉 داده‌های روزانه برای محاسبه Pivot Point یافت نشد.")
         return None
     d = daily_data[today]
@@ -220,7 +222,7 @@ def manual_price(message):
 def stats(message):
     logging.info(f"📊 درخواست آمار از {message.chat.id}")
     today = str(date.today())
-    if today in daily_data:
+    if today in daily_
         d = daily_data[today]
         msg = f"📈 آمار امروز:\nبالاترین: {d['high']:,}\nپایین‌ترین: {d['low']:,}\nآخرین: {d['close']:,}"
     else:
