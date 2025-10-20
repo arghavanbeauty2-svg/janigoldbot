@@ -33,7 +33,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 prices = deque(maxlen=30)
 daily_data = {}
 last_price = None
-active_chats = set()  # پشتیبانی از چند کاربر
+active_chats = set()
 
 # === توابع مدیریت داده ===
 def load_data():
@@ -45,7 +45,7 @@ def load_data():
                 daily_data = json.load(f)
             logging.info("داده‌های روزانه بارگذاری شدند.")
         except Exception as e:
-            logging.error(f"خطا در بارگذاری daily_data: {e}")
+            logging.error(f"خطا در بارگذاری daily_ {e}")
 
     if os.path.exists('prices.json'):
         try:
@@ -80,7 +80,7 @@ def get_gold_price():
         if not isinstance(data, list):
             logging.error("پاسخ API لیست نیست.")
             return None
-        for item in data:
+        for item in 
             if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                 price_str = item.get("price", "0").replace(",", "")
                 return int(price_str)
@@ -93,7 +93,7 @@ def get_gold_price():
 # === به‌روزرسانی داده‌های روزانه ===
 def update_daily_data(price):
     today = str(date.today())
-    if today not in daily_data:
+    if today not in daily_
         daily_data[today] = {"high": price, "low": price, "close": price}
     else:
         daily_data[today]["high"] = max(daily_data[today]["high"], price)
@@ -103,7 +103,7 @@ def update_daily_data(price):
 # === محاسبه Pivot Point ===
 def calculate_pivot_levels():
     today = str(date.today())
-    if today not in daily_data:
+    if today not in daily_
         return None
     d = daily_data[today]
     high, low, close = d["high"], d["low"], d["close"]
@@ -159,7 +159,6 @@ def analyze_and_send(is_manual=False, manual_chat_id=None):
         bot.send_message(manual_chat_id, msg, parse_mode="Markdown")
         return
 
-    # منطق اصلی
     significant_change = False
     near_pivot = is_near_pivot_level(price, pivot_levels, 300)
 
@@ -196,7 +195,6 @@ def manual_price(message):
 
 @bot.message_handler(commands=['stats'])
 def stats(message):
-    logging.info(f"درخواست آمار از {message.chat.id}")
     today = str(date.today())
     if today in daily_data:
         d = daily_data[today]
@@ -205,15 +203,17 @@ def stats(message):
         msg = "⏳ هنوز داده‌ای برای امروز موجود نیست."
     bot.reply_to(message, msg)
 
-# === روت‌های Flask ===
+# === روت‌های Flask (حیاتی برای Render و UptimeRobot) ===
 @app.route('/')
+def root_health():
+    return "OK", 200
+
+@app.route('/health')
 def health():
-    """Health check برای Render و UptimeRobot"""
     return "OK", 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """پردازش درخواست‌های webhook از تلگرام"""
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
@@ -225,7 +225,6 @@ def webhook():
 
 @app.route('/status')
 def status():
-    """وضعیت داخلی ربات (اختیاری)"""
     return jsonify({
         "active_chats_count": len(active_chats),
         "last_price": last_price,
@@ -240,16 +239,16 @@ def run_scheduler():
         time.sleep(1)
 
 # === راه‌اندازی اولیه ===
-load_data()
-try:
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
-    logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
-except Exception as e:
-    logging.error(f"خطا در تنظیم webhook: {e}")
-
-threading.Thread(target=run_scheduler, daemon=True).start()
-
 if __name__ == "__main__":
+    load_data()
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=WEBHOOK_URL)
+        logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
+    except Exception as e:
+        logging.error(f"خطا در تنظیم webhook: {e}")
+    
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
