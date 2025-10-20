@@ -2,8 +2,8 @@
 import os
 import json
 import time
-import logging
 import requests
+import logging
 from datetime import datetime, date
 from collections import deque
 from flask import Flask, request
@@ -23,9 +23,6 @@ if not TOKEN or not API_KEY:
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# === تنظیمات لاگینگ ===
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 # === داده‌های جهانی ===
 prices = deque(maxlen=30)
 daily_data = {}
@@ -33,9 +30,7 @@ last_price = None
 active_users = set()
 
 # === توابع کمکی ===
-
 def get_gold_price():
-    """دریافت قیمت طلای آبشده از BrsApi.ir"""
     url = f"https://BrsApi.ir/Api/Tsetmc/AllSymbols.php?key={API_KEY}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -47,6 +42,7 @@ def get_gold_price():
         if response.status_code == 200:
             data = response.json()
             logging.info("✅ پاسخ موفق از BrsApi.ir دریافت شد.")
+            # ✅ خط اصلاح‌شده: for item in data
             for item in 
                 if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                     price_str = item.get("price", "0").replace(",", "")
@@ -61,7 +57,6 @@ def get_gold_price():
         return None
 
 def update_daily_data(price):
-    """به‌روزرسانی داده‌های روزانه"""
     today = str(date.today())
     if today not in daily_
         daily_data[today] = {"high": price, "low": price, "close": price}
@@ -73,7 +68,6 @@ def update_daily_data(price):
         logging.info(f"📈 داده‌های روز {today} به‌روزرسانی شد.")
 
 def calculate_pivot_levels():
-    """محاسبه سطوح Pivot Point"""
     today = str(date.today())
     if today not in daily_
         logging.warning("📉 داده‌های روزانه برای محاسبه Pivot Point یافت نشد.")
@@ -92,11 +86,10 @@ def calculate_pivot_levels():
     return levels
 
 def send_signal(chat_id, price):
-    """ارسال پیام سیگنال به کاربر"""
     pivot_levels = calculate_pivot_levels()
     msg = f"📊 قیمت فعلی: {price:,}\n"
     if pivot_levels:
-        msg += f"📌 Pivot: {pivot_levels['pivot']:,}"
+        msg += f"📌 Pivot: {pivot_levels['pivot']:,.0f}"
     try:
         bot.send_message(chat_id, msg)
         logging.info(f"📤 سیگنال به {chat_id} ارسال شد.")
@@ -104,7 +97,6 @@ def send_signal(chat_id, price):
         logging.error(f"❌ خطا در ارسال سیگنال به {chat_id}: {e}")
 
 def check_and_notify():
-    """بررسی قیمت و ارسال سیگنال در صورت نیاز"""
     global last_price
     price = get_gold_price()
     if price is None:
@@ -126,12 +118,11 @@ def check_and_notify():
             send_signal(uid, price)
 
 # === هندلرهای تلگرام ===
-
 @bot.message_handler(commands=['start'])
 def start(message):
     active_users.add(message.chat.id)
     logging.info(f"👤 کاربر جدید: {message.chat.id}")
-    bot.reply_to(message, "سلام! ربات فرازگلد فعال شد ✅\nدستور /price برای استعلام دستی.")
+    bot.reply_to(message, "سلام! ربات فعال شد ✅\nدستور /price برای استعلام دستی.")
 
 @bot.message_handler(commands=['price'])
 def manual_price(message):
@@ -147,7 +138,6 @@ def manual_price(message):
         bot.reply_to(message, "❌ خطا در دریافت قیمت.")
 
 # === روت‌های Flask ===
-
 @app.route('/')
 def index():
     return "OK", 200
@@ -166,35 +156,27 @@ def webhook():
     else:
         return 'Bad Request', 400
 
-# === اجرای اولیه و زمان‌بندی ===
-
+# === اجرای اولیه ===
 if __name__ == "__main__":
     import threading
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logging.info("🚀 راه‌اندازی ربات...")
 
-    # حذف webhook قبلی
     try:
         bot.remove_webhook()
         time.sleep(1)
-    except:
-        pass
-
-    # تنظیم webhook جدید
-    try:
         bot.set_webhook(url=WEBHOOK_URL)
         logging.info(f"🔗 Webhook تنظیم شد: {WEBHOOK_URL}")
     except Exception as e:
         logging.error(f"❌ خطا در تنظیم webhook: {e}")
 
-    # راه‌اندازی زمان‌بندی
-    def scheduled_job():
+    def run_scheduler():
         while True:
             time.sleep(120) # 2 دقیقه
             check_and_notify()
 
-    threading.Thread(target=scheduled_job, daemon=True).start()
+    threading.Thread(target=run_scheduler, daemon=True).start()
 
-    # اجرای سرور Flask
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.getenv("PORT", 10000))
     logging.info(f"🌐 سرور روی پورت {port} شروع می‌شود...")
     app.run(host="0.0.0.0", port=port)
