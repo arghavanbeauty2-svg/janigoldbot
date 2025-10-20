@@ -18,7 +18,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# === غیرفعال کردن هشدارهای urllib3 (برای رفع خطاهای Proxy/SSL) ===
+# === غیرفعال کردن هشدارهای urllib3 ===
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # === خواندن متغیرهای محیطی ===
@@ -81,12 +81,11 @@ def get_gold_price():
     }
     try:
         logging.info("📡 ارسال درخواست به BrsApi.ir...")
-        # غیرفعال کردن اعتبارسنجی SSL برای دور زدن خطاهای Proxy
         response = requests.get(url, headers=headers, timeout=10, verify=False)
         if response.status_code == 200:
             data = response.json()
             logging.info("✅ پاسخ موفق از BrsApi.ir دریافت شد.")
-            # ✅ اصلاح شده: خط کامل و بدون کامنت فارسی
+            # ✅ خط کامل و صحیح (بدون کامنت فارسی)
             for item in 
                 if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                     price_str = item.get("price", "0").replace(",", "")
