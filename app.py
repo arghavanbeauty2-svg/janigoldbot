@@ -45,7 +45,7 @@ def load_data():
                 daily_data = json.load(f)
             logging.info("داده‌های روزانه بارگذاری شدند.")
         except Exception as e:
-            logging.error(f"خطا در بارگذاری daily_data: {e}")
+            logging.error(f"خطا در بارگذاری daily_ {e}")
 
     if os.path.exists('prices.json'):
         try:
@@ -93,7 +93,7 @@ def get_gold_price():
 # === به‌روزرسانی داده‌های روزانه ===
 def update_daily_data(price):
     today = str(date.today())
-    if today not in daily_data:
+    if today not in daily_
         daily_data[today] = {"high": price, "low": price, "close": price}
     else:
         daily_data[today]["high"] = max(daily_data[today]["high"], price)
@@ -103,7 +103,7 @@ def update_daily_data(price):
 # === محاسبه Pivot Point ===
 def calculate_pivot_levels():
     today = str(date.today())
-    if today not in daily_data:
+    if today not in daily_
         return None
     d = daily_data[today]
     high, low, close = d["high"], d["low"], d["close"]
@@ -127,21 +127,18 @@ def is_in_active_hours():
     now = datetime.now().time()
     return (dtime(11, 0) <= now <= dtime(19, 0)) or (now >= dtime(22, 30) or now <= dtime(6, 30))
 
-# === تحلیل و ارسال سیگنال به همه کاربران فعال ===
+# === تحلیل و ارسال سیگنال ===
 def analyze_and_send(is_manual=False, manual_chat_id=None):
     global last_price
     if not active_chats and not is_manual:
-        logging.info("هیچ کاربر فعالی وجود ندارد.")
         return
 
     price = get_gold_price()
     if price is None:
         msg = "❌ خطای دریافت قیمت از API"
-        if is_manual and manual_chat_id:
-            bot.send_message(manual_chat_id, msg)
-        else:
-            for cid in active_chats:
-                bot.send_message(cid, msg)
+        target_chats = [manual_chat_id] if is_manual and manual_chat_id else active_chats
+        for cid in target_chats:
+            bot.send_message(cid, msg)
         return
 
     update_daily_data(price)
@@ -149,7 +146,6 @@ def analyze_and_send(is_manual=False, manual_chat_id=None):
     prices.append(price)
     pivot_levels = calculate_pivot_levels()
 
-    # ارسال پاسخ دستی
     if is_manual and manual_chat_id:
         msg = f"📊 قیمت دستی: {price:,}\n"
         if pivot_levels:
@@ -163,7 +159,7 @@ def analyze_and_send(is_manual=False, manual_chat_id=None):
         bot.send_message(manual_chat_id, msg, parse_mode="Markdown")
         return
 
-    # منطق اصلی: تغییر > 0.2% یا نزدیکی به Pivot
+    # منطق اصلی
     significant_change = False
     near_pivot = is_near_pivot_level(price, pivot_levels, 300)
 
@@ -201,7 +197,7 @@ def manual_price(message):
 @bot.message_handler(commands=['stats'])
 def stats(message):
     today = str(date.today())
-    if today in daily_data:
+    if today in daily_
         d = daily_data[today]
         msg = f"📈 آمار امروز:\nبالاترین: {d['high']:,}\nپایین‌ترین: {d['low']:,}\nآخرین: {d['close']:,}"
     else:
@@ -209,8 +205,14 @@ def stats(message):
     bot.reply_to(message, msg)
 
 # === روت‌های Flask ===
+@app.route('/')
+def health():
+    """Health check برای Render و UptimeRobot"""
+    return "OK", 200
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    """پردازش درخواست‌های webhook از تلگرام"""
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
@@ -220,12 +222,9 @@ def webhook():
         logging.warning("درخواست webhook با content-type نامعتبر")
         return 'Bad Request', 400
 
-@app.route('/health')
-def health():
-    return "Bot is alive!", 200
-
 @app.route('/status')
 def status():
+    """وضعیت داخلی ربات (اختیاری)"""
     return jsonify({
         "active_chats_count": len(active_chats),
         "last_price": last_price,
@@ -241,20 +240,15 @@ def run_scheduler():
 
 # === راه‌اندازی اولیه ===
 if __name__ == "__main__":
-    # بارگذاری داده‌ها
     load_data()
-    
-    # تنظیم webhook
     try:
         bot.remove_webhook()
         bot.set_webhook(url=WEBHOOK_URL)
-        logging.info(f"Webhook با موفقیت تنظیم شد: {WEBHOOK_URL}")
+        logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
     except Exception as e:
         logging.error(f"خطا در تنظیم webhook: {e}")
     
-    # راه‌اندازی scheduler در ترد جداگانه
     threading.Thread(target=run_scheduler, daemon=True).start()
     
-    # اجرای Flask
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
