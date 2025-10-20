@@ -1,3 +1,4 @@
+# app.py
 import os
 import json
 import logging
@@ -47,7 +48,7 @@ def load_data():
                 daily_data = json.load(f)
             logging.info("✅ داده‌های روزانه بارگذاری شدند.")
         except Exception as e:
-            logging.error(f"❌ خطا در بارگذاری daily_data: {e}")
+            logging.error(f"❌ خطا در بارگذاری daily_ {e}")
 
     if os.path.exists('prices.json'):
         try:
@@ -81,7 +82,8 @@ def get_gold_price():
         if response.status_code == 200:
             data = response.json()
             logging.info("✅ پاسخ موفق از BrsApi.ir دریافت شد.")
-            for item in   # ✅ خط کامل و صحیح
+            # اصلاح خطای SyntaxError: خط زیر باید کامل باشد
+            for item in data:  # ✅ این خط اکنون صحیح است
                 if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                     price_str = item.get("price", "0").replace(",", "")
                     price = int(price_str)
@@ -99,7 +101,7 @@ def get_gold_price():
 # === به‌روزرسانی داده‌های روزانه ===
 def update_daily_data(price):
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         daily_data[today] = {"high": price, "low": price, "close": price}
         logging.info(f"📅 داده‌های روز جدید ایجاد شد: {today}")
     else:
@@ -111,7 +113,7 @@ def update_daily_data(price):
 # === محاسبه Pivot Point ===
 def calculate_pivot_levels():
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         logging.warning("📉 داده‌های روزانه برای محاسبه Pivot Point یافت نشد.")
         return None
     d = daily_data[today]
@@ -218,7 +220,7 @@ def manual_price(message):
 def stats(message):
     logging.info(f"📊 درخواست آمار از {message.chat.id}")
     today = str(date.today())
-    if today in daily_
+    if today in daily_data:
         d = daily_data[today]
         msg = f"📈 آمار امروز:\nبالاترین: {d['high']:,}\nپایین‌ترین: {d['low']:,}\nآخرین: {d['close']:,}"
     else:
