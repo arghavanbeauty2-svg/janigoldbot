@@ -2,8 +2,8 @@
 import os
 import json
 import time
-import requests
 import logging
+import requests
 from datetime import datetime, date
 from collections import deque
 from flask import Flask, request
@@ -11,36 +11,31 @@ import telebot
 import urllib3
 
 # === تنظیمات اولیه ===
-# غیرفعال کردن هشدارهای urllib3 برای دور زدن خطاهای Proxy/SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# خواندن متغیرهای محیطی
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
-API_KEY = os.getenv("API_KEY", "YOUR_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-app.onrender.com/webhook")
+TOKEN = os.getenv("BOT_TOKEN")
+API_KEY = os.getenv("API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://janigoldbot.onrender.com/webhook")
 
-# اطمینان از وجود متغیرهای ضروری
-if TOKEN == "YOUR_BOT_TOKEN" or API_KEY == "YOUR_API_KEY":
+if not TOKEN or not API_KEY:
     raise ValueError("لطفاً متغیرهای محیطی BOT_TOKEN و API_KEY را در Render تنظیم کنید.")
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# داده‌های جهانی
+# === تنظیمات لاگینگ ===
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# === داده‌های جهانی ===
 prices = deque(maxlen=30)
 daily_data = {}
 last_price = None
-active_users = set()  # استفاده از set برای جلوگیری از تکرار
-
-# === تنظیمات لاگینگ ساده ===
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+active_users = set()
 
 # === توابع کمکی ===
 
 def get_gold_price():
-    """
-    دریافت قیمت طلای آبشده از BrsApi.ir
-    """
+    """دریافت قیمت طلای آبشده از BrsApi.ir"""
     url = f"https://BrsApi.ir/Api/Tsetmc/AllSymbols.php?key={API_KEY}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -48,12 +43,10 @@ def get_gold_price():
     }
     try:
         logging.info("📡 ارسال درخواست به BrsApi.ir...")
-        # verify=False برای دور زدن خطاهای SSL/Proxy
         response = requests.get(url, headers=headers, timeout=10, verify=False)
         if response.status_code == 200:
             data = response.json()
             logging.info("✅ پاسخ موفق از BrsApi.ir دریافت شد.")
-            # پردازش لیست داده‌ها برای یافتن نماد مورد نظر
             for item in 
                 if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                     price_str = item.get("price", "0").replace(",", "")
@@ -68,9 +61,7 @@ def get_gold_price():
         return None
 
 def update_daily_data(price):
-    """
-    به‌روزرسانی داده‌های روزانه (بالاترین، پایین‌ترین، آخرین)
-    """
+    """به‌روزرسانی داده‌های روزانه"""
     today = str(date.today())
     if today not in daily_
         daily_data[today] = {"high": price, "low": price, "close": price}
@@ -82,9 +73,7 @@ def update_daily_data(price):
         logging.info(f"📈 داده‌های روز {today} به‌روزرسانی شد.")
 
 def calculate_pivot_levels():
-    """
-    محاسبه سطوح Pivot Point بر اساس داده‌های روزانه
-    """
+    """محاسبه سطوح Pivot Point"""
     today = str(date.today())
     if today not in daily_
         logging.warning("📉 داده‌های روزانه برای محاسبه Pivot Point یافت نشد.")
@@ -103,9 +92,7 @@ def calculate_pivot_levels():
     return levels
 
 def send_signal(chat_id, price):
-    """
-    ارسال پیام سیگنال به کاربر
-    """
+    """ارسال پیام سیگنال به کاربر"""
     pivot_levels = calculate_pivot_levels()
     msg = f"📊 قیمت فعلی: {price:,}\n"
     if pivot_levels:
@@ -117,9 +104,7 @@ def send_signal(chat_id, price):
         logging.error(f"❌ خطا در ارسال سیگنال به {chat_id}: {e}")
 
 def check_and_notify():
-    """
-    بررسی قیمت و ارسال سیگنال در صورت نیاز
-    """
+    """بررسی قیمت و ارسال سیگنال در صورت نیاز"""
     global last_price
     price = get_gold_price()
     if price is None:
@@ -128,7 +113,6 @@ def check_and_notify():
     update_daily_data(price)
     prices.append(price)
 
-    # منطق اولیه: تغییر > 0.2%
     if last_price is None:
         last_price = price
         logging.info("🆕 اولین قیمت ثبت شد.")
@@ -138,8 +122,7 @@ def check_and_notify():
     if change_percent >= 0.2:
         logging.info(f"📈 تغییر قیمت > 0.2%: {change_percent:.2f}%")
         last_price = price
-        # ارسال سیگنال به همه کاربران فعال
-        for uid in active_users.copy(): # استفاده از copy برای جلوگیری از خطای ConcurrentModification
+        for uid in active_users.copy():
             send_signal(uid, price)
 
 # === هندلرهای تلگرام ===
@@ -158,7 +141,7 @@ def manual_price(message):
         pivot_levels = calculate_pivot_levels()
         msg = f"📊 قیمت دستی: {price:,}\n"
         if pivot_levels:
-            msg += f"📌 Pivot: {pivot_levels['pivot']:,}"
+            msg += f"📌 Pivot: {pivot_levels['pivot']:,.0f}"
         bot.reply_to(message, msg)
     else:
         bot.reply_to(message, "❌ خطا در دریافت قیمت.")
@@ -189,7 +172,7 @@ if __name__ == "__main__":
     import threading
     logging.info("🚀 راه‌اندازی ربات...")
 
-    # حذف webhook قبلی (در صورت وجود)
+    # حذف webhook قبلی
     try:
         bot.remove_webhook()
         time.sleep(1)
@@ -203,7 +186,7 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"❌ خطا در تنظیم webhook: {e}")
 
-    # راه‌اندازی زمان‌بندی برای چک کردن قیمت هر 2 دقیقه
+    # راه‌اندازی زمان‌بندی
     def scheduled_job():
         while True:
             time.sleep(120) # 2 دقیقه
