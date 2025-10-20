@@ -35,6 +35,29 @@ daily_data = {}
 last_price = None
 active_chats = set()  # پشتیبانی از چند کاربر
 
+# هندلرهای تلگرام (خارج از __main__ برای gunicorn)
+@bot.message_handler(commands=['start'])
+def start(message):
+    active_chats.add(message.chat.id)
+    logging.info(f"کاربر جدید: {message.chat.id}")
+    bot.reply_to(message, "ربات فرازگلد فعال شد! ✅\nدستور /price برای استعلام دستی.\nدستور /stats برای آمار روزانه.")
+
+@bot.message_handler(commands=['price'])
+def manual_price(message):
+    logging.info(f"درخواست دستی قیمت از {message.chat.id}")
+    analyze_and_send(is_manual=True, manual_chat_id=message.chat.id)
+
+@bot.message_handler(commands=['stats'])
+def stats(message):
+    logging.info(f"درخواست آمار از {message.chat.id}")
+    today = str(date.today())
+    if today in daily_data:
+        d = daily_data[today]
+        msg = f"📈 آمار امروز:\nبالاترین: {d['high']:,}\nپایین‌ترین: {d['low']:,}\nآخرین: {d['close']:,}"
+    else:
+        msg = "⏳ هنوز داده‌ای برای امروز موجود نیست."
+    bot.reply_to(message, msg)
+
 # === توابع مدیریت داده ===
 def load_data():
     global daily_data, prices
