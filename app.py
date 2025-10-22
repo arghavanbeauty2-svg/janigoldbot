@@ -2,11 +2,8 @@ import os
 import json
 import logging
 import requests
-from datetime import datetime, date
 from flask import Flask, request, jsonify
 import telebot
-import threading
-import schedule
 import time
 import urllib3
 
@@ -141,14 +138,6 @@ def status():
         "status": "running"
     })
 
-# === زمان‌بندی چک خودکار ===
-def run_scheduler():
-    logging.info("Scheduler شروع شد.")
-    schedule.every(2).minutes.do(lambda: logging.info("چک قیمت دوره‌ای اجرا شد."))
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
 # === اجرای اولیه ===
 if __name__ == "__main__":
     logging.info("🚀 راه‌اندازی ربات...")
@@ -160,8 +149,6 @@ if __name__ == "__main__":
         logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
     except Exception as e:
         logging.error(f"خطا در تنظیم webhook: {e}")
-
-    threading.Thread(target=run_scheduler, daemon=True).start()
 
     port = int(os.getenv("PORT", 10000))
     logging.info(f"🌐 سرور روی پورت {port} شروع می‌شود...")
