@@ -136,10 +136,18 @@ def webhook():
 def status():
     logging.debug("درخواست وضعیت ربات")
     return jsonify({
-        "active_users_count": len(active_users),
+        "active_users_count": 0,
         "last_price": get_gold_price(),
         "status": "running"
     })
+
+# === زمان‌بندی چک خودکار ===
+def run_scheduler():
+    logging.info("Scheduler شروع شد.")
+    schedule.every(2).minutes.do(lambda: logging.info("چک قیمت دوره‌ای اجرا شد."))
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 # === اجرای اولیه ===
 if __name__ == "__main__":
@@ -152,6 +160,8 @@ if __name__ == "__main__":
         logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
     except Exception as e:
         logging.error(f"خطا در تنظیم webhook: {e}")
+
+    threading.Thread(target=run_scheduler, daemon=True).start()
 
     port = int(os.getenv("PORT", 10000))
     logging.info(f"🌐 سرور روی پورت {port} شروع می‌شود...")
