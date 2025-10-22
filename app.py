@@ -14,7 +14,7 @@ import urllib3
 # غیرفعال کردن هشدارهای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# تنظیمات لاگینگ به stdout/stderr (برای Render Logs)
+# تنظیمات لاگینگ به stdout/stderr
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -38,6 +38,18 @@ prices = deque(maxlen=30)
 daily_data = {}
 last_price = None
 active_users = set()
+
+# === تست اولیه BOT_TOKEN ===
+def test_bot_token():
+    try:
+        response = requests.get(f"https://api.telegram.org/bot{TOKEN}/getMe")
+        data = response.json()
+        if data.get("ok"):
+            logging.info(f"✅ BOT_TOKEN معتبر است: {data['result']['username']}")
+        else:
+            logging.error(f"❌ BOT_TOKEN نامعتبر: {data}")
+    except Exception as e:
+        logging.error(f"❌ خطا در تست BOT_TOKEN: {e}")
 
 # === توابع مدیریت داده ===
 def load_data():
@@ -215,8 +227,8 @@ def check_and_notify(is_manual=False, manual_chat_id=None):
 # === هندلرهای تلگرام ===
 @bot.message_handler(commands=['start'])
 def start(message):
-    active_users.add(message.chat.id)
     logging.info(f"👤 کاربر جدید: {message.chat.id}")
+    active_users.add(message.chat.id)
     try:
         bot.reply_to(message, "سلام! ربات فعال شد ✅\nدستور /price برای استعلام دستی.\nدستور /stats برای آمار روزانه.")
         logging.info(f"پاسخ /start به {message.chat.id} ارسال شد.")
@@ -293,6 +305,7 @@ def run_scheduler():
 # === اجرای اولیه ===
 if __name__ == "__main__":
     logging.info("🚀 راه‌اندازی ربات...")
+    test_bot_token()  # تست BOT_TOKEN
     load_data()
     try:
         bot.remove_webhook()
