@@ -1,11 +1,11 @@
 import os
 import json
 import logging
+import requests
 from datetime import datetime, time as dtime, date
 from collections import deque
 from flask import Flask, request, jsonify
 import telebot
-import requests
 import threading
 import schedule
 import time
@@ -14,9 +14,8 @@ import urllib3
 # غیرفعال کردن هشدارهای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# تنظیمات لاگینگ
+# تنظیمات لاگینگ به stdout/stderr (برای Render Logs)
 logging.basicConfig(
-    filename='goldbot.log',
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -83,7 +82,7 @@ def get_gold_price():
         response = requests.get(url, headers=headers, timeout=10, verify=False)
         response.raise_for_status()
         data = response.json()
-        logging.debug(f"پاسخ API: {data}")
+        logging.debug(f"پاسخ API: {json.dumps(data, ensure_ascii=False)}")
         if isinstance(data, dict) and 'gold' in data:
             for item in data['gold']:
                 if item.get("symbol") == "IR_GOLD_MELTED":
@@ -260,12 +259,15 @@ def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         logging.debug(f"Webhook دریافت شد: {json_string}")
-        update = telebot.types.Update.de_json(json_string)
-        if update:
-            logging.debug(f"Update پردازش شد: {update}")
-            bot.process_new_updates([update])
-        else:
-            logging.warning("Update نامعتبر دریافت شد.")
+        try:
+            update = telebot.types.Update.de_json(json_string)
+            if update:
+                logging.debug(f"Update پردازش شد: {update}")
+                bot.process_new_updates([update])
+            else:
+                logging.warning("Update نامعتبر دریافت شد.")
+        except Exception as e:
+            logging.error(f"خطا در پردازش webhook: {e}")
         return '', 200
     else:
         logging.warning("درخواست webhook با content-type نامعتبر")
@@ -289,18 +291,19 @@ def run_scheduler():
         time.sleep(1)
 
 # === اجرای اولیه ===
-load_data()
-try:
-    bot.remove_webhook()
-    time.sleep(1)
-    bot.set_webhook(url=WEBHOOK_URL)
-    logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
-except Exception as e:
-    logging.error(f"خطا در تنظیم webhook: {e}")
-
-threading.Thread(target=run_scheduler, daemon=True).start()
-
 if __name__ == "__main__":
     logging.info("🚀 راه‌اندازی ربات...")
+    load_data()
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=WEBHOOK_URL)
+        logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
+    except Exception as e:
+        logging.error(f"خطا در تنظیم webhook: {e}")
+
+    threading.Thread(target=run_scheduler, daemon=True).start()
+
     port = int(os.getenv("PORT", 10000))
+    logging.info(f"🌐 سرور روی پورت {port} شروع می‌شود...")
     app.run(host="0.0.0.0", port=port)
