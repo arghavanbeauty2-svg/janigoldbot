@@ -1,14 +1,14 @@
-# app.py
 import os
 import json
-import time
-import requests
 import logging
-from datetime import datetime, date
+from datetime import datetime, time as dtime, date
 from collections import deque
 from flask import Flask, request
 import telebot
 import urllib3
+import threading
+import schedule
+import time
 
 # === تنظیمات اولیه ===
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -18,6 +18,7 @@ API_KEY = os.getenv("API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://janigoldbot.onrender.com/webhook")
 
 if not TOKEN or not API_KEY:
+    logging.error("TOKEN یا API_KEY تنظیم نشده است.")
     raise ValueError("لطفاً متغیرهای محیطی BOT_TOKEN و API_KEY را در Render تنظیم کنید.")
 
 bot = telebot.TeleBot(TOKEN)
@@ -42,8 +43,7 @@ def get_gold_price():
         if response.status_code == 200:
             data = response.json()
             logging.info("✅ پاسخ موفق از BrsApi.ir دریافت شد.")
-            # ✅ خط اصلاح‌شده: for item in data
-            for item in 
+            for item in data:
                 if isinstance(item, dict) and item.get("symbol") == "IR_GOLD_MELTED":
                     price_str = item.get("price", "0").replace(",", "")
                     price = int(price_str)
@@ -58,7 +58,7 @@ def get_gold_price():
 
 def update_daily_data(price):
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         daily_data[today] = {"high": price, "low": price, "close": price}
         logging.info(f"📅 داده‌های روز جدید ایجاد شد: {today}")
     else:
@@ -69,7 +69,7 @@ def update_daily_data(price):
 
 def calculate_pivot_levels():
     today = str(date.today())
-    if today not in daily_
+    if today not in daily_data:
         logging.warning("📉 داده‌های روزانه برای محاسبه Pivot Point یافت نشد.")
         return None
     d = daily_data[today]
@@ -166,7 +166,7 @@ if __name__ == "__main__":
         bot.remove_webhook()
         time.sleep(1)
         bot.set_webhook(url=WEBHOOK_URL)
-        logging.info(f"🔗 Webhook تنظیم شد: {WEBHOOK_URL}")
+        logging.info(f"Webhook تنظیم شد: {WEBHOOK_URL}")
     except Exception as e:
         logging.error(f"❌ خطا در تنظیم webhook: {e}")
 
