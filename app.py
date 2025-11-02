@@ -3,6 +3,12 @@ import requests
 import json
 import logging
 import os
+import pytesseract
+from PIL import Image
+import cv2
+import numpy as np
+import talib
+import io
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -20,17 +26,19 @@ def load_price():
         try:
             with open(PRICE_FILE, 'r') as f:
                 data = json.load(f)
-                return data.get("price", 45555000), data.get("previous", 45555000)
+                return data.get("price", 45555000)
         except:
             pass
-    return 45555000, 45555000
+    return 45555000
+
+price = load_price()
 
 # --- ذخیره قیمت ---
-def save_price(price, previous):
+def save_price(p):
+    global price
+    price = p
     with open(PRICE_FILE, 'w') as f:
-        json.dump({"price": price, "previous": previous}, f)
-
-price, previous_price = load_price()
+        json.dump({"price": price}, f)
 
 # --- دکمه‌ها ---
 def get_keyboard():
@@ -42,94 +50,132 @@ def get_keyboard():
             [{"text": "-۱۰,۰۰۰", "callback_data": "sub_10000"},
              {"text": "-۱۰۰,۰۰۰", "callback_data": "sub_100000"},
              {"text": "-۱,۰۰۰,۰۰۰", "callback_data": "sub_1000000"}],
-            [{"text": "🔄 بروزرسانی", "callback_data": "refresh"},
-             {"text": "📊 سیگنال", "callback_data": "signal"}]
+            [{"text": "📊 سیگنال", "callback_data": "signal"},
+             {"text": "🔄 بروزرسانی", "callback_data": "refresh"}]
         ]
     }
 
-# --- سیگنال ---
-def check_signal():
-    if previous_price == 0:
-        return "بدون تغییر قبلی"
-    change_percent = (price - previous_price) / previous_price * 100
-    if change_percent >= 2:
-        return f"📈 **سیگنال خرید** (+{change_percent:.2f}%)"
-    elif change_percent <= -2:
-        return f"📉 **سیگنال فروش** ({change_percent:.2f}%)"
+# --- تحلیل و سیگنال ---
+def generate_signal(current_price, rsi=None):
+    tp = int(current_price * 1.02)  # +2%
+    sl = int(current_price * 0.99)  # -1%
+    rr = "1:2"
+    
+    if rsi is not None and rsi > 70:
+        return f"📉 **سیگنال فروش**\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}\n📈 RSI: {rsi:.1f} (اشباع خرید)"
+    elif rsi is not None and rsi < 30:
+        return f"📈 **سیگنال خرید**\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}\n📉 RSI: {rsi:.1f} (اشباع فروش)"
     else:
-        return f"➖ بدون سیگنال ({change_percent:+.2f}%)"
+        return f"➖ **بدون سیگنال قوی**\n\n💰 قیمت: `{current_price:,}`\n\nورود پیشنهادی: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
 
-# --- ارسال قیمت ---
-def send_price(chat_id, message_id=None):
-    global price, previous_price
-    change = price - previous_price
-    change_percent = (change / previous_price * 100) if previous_price else 0
-    message = f"💰 **قیمت طلای آب‌شده**\n`{price:,} تومان`\n\n"
-    if change != 0:
-        message += f"{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({change_percent:+.2f}%)\n\n"
-    message += check_signal() + "\n\n"
-    message += "تنظیم قیمت با دکمه 👇"
+# --- پیش‌پردازش و OCR ---
+def ocr_chart(image_bytes):
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        text = pytesseract.image_to_string(thresh, config='--psm 6 -c tessedit_char_whitelist=0123456789.,')
+        numbers = [float(x) for x in text.replace(',', '').split() if x.replace('.', '').isdigit()]
+        if len(numbers) >= 4:
+            closes = numbers[-20:]  # آخرین 20 کندل
+            rsi = talib.RSI(np.array(closes), timeperiod=14)[-1]
+            return int(closes[-1]), rsi
+    except Exception as e:
+        logger.error(f"OCR خطا: {e}")
+    return None, None
 
+# --- دانلود فایل ---
+def download_file(file_id):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile"
+    resp = requests.post(url, data={'file_id': file_id}).json()
+    if resp.get('ok'):
+        file_path = resp['result']['file_path']
+        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+        return requests.get(download_url).content
+    return None
+
+# --- ارسال پیام ---
+def send_message(chat_id, text, reply_markup=None):
     payload = {
         'chat_id': chat_id,
-        'text': message,
-        'parse_mode': 'Markdown',
-        'reply_markup': json.dumps(get_keyboard())
+        'text': text,
+        'parse_mode': 'Markdown'
     }
-    if message_id:
-        payload['message_id'] = message_id
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
-    else:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
     try:
-        resp = requests.post(url, data=payload, timeout=10).json()
-        if resp.get('ok'):
-            logger.info(f"پیام به {chat_id}")
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=payload, timeout=10)
     except Exception as e:
         logger.error(f"ارسال شکست: {e}")
 
 # --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        update = request.get_json()
+    if request.headers.get('content-type') != 'application/json':
+        abort(403)
+    
+    update = request.get_json()
+    
+    if 'message' in update:
+        msg = update['message']
+        chat_id = msg['chat']['id']
         
-        # /start یا اولین پیام
-        if 'message' in update:
-            chat_id = update['message']['chat']['id']
-            send_price(chat_id)
-
-        # دکمه‌ها
-        elif 'callback_query' in update:
-            cb = update['callback_query']
-            chat_id = cb['message']['chat']['id']
-            message_id = cb['message']['message_id']
-            data = cb['data']
-            global price, previous_price
-
-            if data.startswith("add_") or data.startswith("sub_"):
-                amount = int(data.split("_")[1])
-                if data.startswith("sub_"):
-                    amount = -amount
-                previous_price = price
-                price += amount
-                save_price(price, previous_price)
-                send_price(chat_id, message_id)
-            
-            elif data == "refresh":
-                send_price(chat_id, message_id)
-            
-            elif data == "signal":
-                signal = check_signal()
-                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                              data={'chat_id': chat_id, 'text': signal, 'parse_mode': 'Markdown'})
-
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
-                          data={'callback_query_id': cb['id']})
+        # اسکرین‌شات چارت
+        if 'photo' in msg:
+            file_id = msg['photo'][-1]['file_id']
+            image_bytes = download_file(file_id)
+            if image_bytes:
+                new_price, rsi = ocr_chart(image_bytes)
+                if new_price:
+                    save_price(new_price)
+                    signal = generate_signal(new_price, rsi)
+                    send_message(chat_id, signal, get_keyboard())
+                else:
+                    send_message(chat_id, "❌ چارت قابل خواندن نیست. قیمت دستی تنظیم کنید.")
+            return '', 200
         
-        return '', 200
-    abort(403)
+        # قیمت دستی (متن)
+        text = msg.get('text', '').strip()
+        if text.isdigit():
+            new_price = int(text)
+            save_price(new_price)
+            signal = generate_signal(new_price)
+            send_message(chat_id, signal, get_keyboard())
+            return '', 200
+        
+        if text == '/start':
+            send_message(chat_id, 
+                "📸 **اسکرین‌شات چارت بفرستید** یا **قیمت بنویسید** (مثل 46500000)\n\n"
+                "یا از دکمه‌ها استفاده کنید 👇", get_keyboard())
+
+    elif 'callback_query' in update:
+        cb = update['callback_query']
+        chat_id = cb['message']['chat']['id']
+        message_id = cb['message']['message_id']
+        data = cb['data']
+        global price
+
+        if data.startswith("add_") or data.startswith("sub_"):
+            amount = int(data.split("_")[1])
+            if data.startswith("sub_"): amount = -amount
+            price += amount
+            save_price(price)
+            signal = generate_signal(price)
+            send_message(chat_id, signal, get_keyboard())
+        
+        elif data == "signal":
+            signal = generate_signal(price)
+            send_message(chat_id, signal)
+        
+        elif data == "refresh":
+            signal = generate_signal(price)
+            send_message(chat_id, signal, get_keyboard())
+        
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+                      data={'callback_query_id': cb['id']})
+    
+    return '', 200
 
 @app.before_request
 def setup_webhook():
@@ -145,7 +191,7 @@ def setup_webhook():
 
 @app.route('/')
 def home():
-    return "ربات دکمه‌ای قیمت + سیگنال"
+    return "ربات تحلیل چارت + سیگنال"
 
 if __name__ == '__main__':
     app.run()
