@@ -20,16 +20,16 @@ WEBHOOK_URL = "https://abshodeh.onrender.com/webhook"
 PRICE_FILE = "price.json"
 webhook_set = False
 
-# --- بارگذاری قیمت ---
+# --- بارگذاری قیمت (بدون پیش‌فرض) ---
 def load_price():
     if os.path.exists(PRICE_FILE):
         try:
             with open(PRICE_FILE, 'r') as f:
                 data = json.load(f)
-                return data.get("price", 45555000)
+                return data.get("price")
         except:
             pass
-    return 45555000
+    return None  # بدون قیمت اولیه
 
 price = load_price()
 
@@ -55,20 +55,21 @@ def get_keyboard():
         ]
     }
 
-# --- تحلیل و سیگنال ---
+# --- سیگنال ---
 def generate_signal(current_price, rsi=None):
-    tp = int(current_price * 1.02)  # +2%
-    sl = int(current_price * 0.99)  # -1%
+    tp = int(current_price * 1.02)
+    sl = int(current_price * 0.99)
     rr = "1:2"
+    rsi_text = f"\n📈 RSI: {rsi:.1f}" if rsi else ""
     
-    if rsi is not None and rsi > 70:
-        return f"📉 **سیگنال فروش**\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}\n📈 RSI: {rsi:.1f} (اشباع خرید)"
-    elif rsi is not None and rsi < 30:
-        return f"📈 **سیگنال خرید**\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}\n📉 RSI: {rsi:.1f} (اشباع فروش)"
+    if rsi and rsi > 70:
+        return f"📉 **سیگنال فروش**{rsi_text}\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
+    elif rsi and rsi < 30:
+        return f"📈 **سیگنال خرید**{rsi_text}\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
     else:
-        return f"➖ **بدون سیگنال قوی**\n\n💰 قیمت: `{current_price:,}`\n\nورود پیشنهادی: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
+        return f"➖ **بدون سیگنال قوی**\n\n💰 قیمت: `{current_price:,}`\n\nورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
 
-# --- پیش‌پردازش و OCR ---
+# --- OCR چارت ---
 def ocr_chart(image_bytes):
     try:
         image = Image.open(io.BytesIO(image_bytes))
@@ -76,9 +77,9 @@ def ocr_chart(image_bytes):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         text = pytesseract.image_to_string(thresh, config='--psm 6 -c tessedit_char_whitelist=0123456789.,')
-        numbers = [float(x) for x in text.replace(',', '').split() if x.replace('.', '').isdigit()]
+        numbers = [float(x.replace(',', '')) for x in text.split() if x.replace('.', '').replace(',', '').isdigit()]
         if len(numbers) >= 4:
-            closes = numbers[-20:]  # آخرین 20 کندل
+            closes = numbers[-20:]
             rsi = talib.RSI(np.array(closes), timeperiod=14)[-1]
             return int(closes[-1]), rsi
     except Exception as e:
@@ -97,11 +98,7 @@ def download_file(file_id):
 
 # --- ارسال پیام ---
 def send_message(chat_id, text, reply_markup=None):
-    payload = {
-        'chat_id': chat_id,
-        'text': text,
-        'parse_mode': 'Markdown'
-    }
+    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
     if reply_markup:
         payload['reply_markup'] = json.dumps(reply_markup)
     try:
@@ -121,7 +118,7 @@ def webhook():
         msg = update['message']
         chat_id = msg['chat']['id']
         
-        # اسکرین‌شات چارت
+        # اسکرین‌شات
         if 'photo' in msg:
             file_id = msg['photo'][-1]['file_id']
             image_bytes = download_file(file_id)
@@ -132,12 +129,12 @@ def webhook():
                     signal = generate_signal(new_price, rsi)
                     send_message(chat_id, signal, get_keyboard())
                 else:
-                    send_message(chat_id, "❌ چارت قابل خواندن نیست. قیمت دستی تنظیم کنید.")
+                    send_message(chat_id, "❌ چارت قابل خواندن نیست. عدد بنویسید یا دکمه بزنید.")
             return '', 200
         
-        # قیمت دستی (متن)
+        # قیمت دستی (عدد)
         text = msg.get('text', '').strip()
-        if text.isdigit():
+        if text.isdigit() and len(text) >= 5:
             new_price = int(text)
             save_price(new_price)
             signal = generate_signal(new_price)
@@ -146,15 +143,18 @@ def webhook():
         
         if text == '/start':
             send_message(chat_id, 
-                "📸 **اسکرین‌شات چارت بفرستید** یا **قیمت بنویسید** (مثل 46500000)\n\n"
-                "یا از دکمه‌ها استفاده کنید 👇", get_keyboard())
+                "📸 **اسکرین‌شات چارت بفرستید** یا **قیمت بنویسید**\n\n"
+                "تنظیم با دکمه 👇", get_keyboard())
 
     elif 'callback_query' in update:
         cb = update['callback_query']
         chat_id = cb['message']['chat']['id']
-        message_id = cb['message']['message_id']
         data = cb['data']
         global price
+
+        if price is None:
+            send_message(chat_id, "⚠️ ابتدا قیمت تنظیم کنید.")
+            return '', 200
 
         if data.startswith("add_") or data.startswith("sub_"):
             amount = int(data.split("_")[1])
@@ -191,7 +191,7 @@ def setup_webhook():
 
 @app.route('/')
 def home():
-    return "ربات تحلیل چارت + سیگنال"
+    return "ربات تحلیل چارت + سیگنال (بدون قیمت پیش‌فرض)"
 
 if __name__ == '__main__':
     app.run()
