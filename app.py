@@ -14,43 +14,45 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8296855766:AAEAOO_NA2Q0GROFMKACAVV2ZnkxvDBroWM"
 WEBHOOK_URL = "https://abshodeh.onrender.com/webhook"
 BRS_API_URL = "https://brsapi.ir/Api/Market/Gold_Currency.php?key=BFnYYJjKvtuvPhtIZ2WfyFNhE54TG6ly"
-PROXY_API_URL = "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&country=IR&anonymity=elite&timeout=3000"
+PROXY_API_URL = "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&country=IR&anonymity=elite&timeout=2000"
 NOBITEX_URL = "https://api.nobitex.ir/v2/orderbook/XAUTUSDT"
 
 keyboard = {"inline_keyboard": [[{"text": "🔄 استعلام مجدد", "callback_data": "get_price"}]]}
 webhook_set = False
 cached_price = {"price": 45555000, "change": 948000, "percent": 2.13, "timestamp": 0}
-CACHE_TIME = 120  # ۲ دقیقه
+CACHE_TIME = 90  # ۹۰ ثانیه
 live_proxies = []
 proxy_lock = threading.Lock()
 
-# --- دریافت و تست پروکسی‌ها (هر ۲ دقیقه) ---
+# --- بروزرسانی پروکسی‌ها (هر ۹۰ ثانیه) ---
 def update_proxies():
     global live_proxies
     while True:
         try:
-            resp = requests.get(PROXY_API_URL, timeout=10).text
-            candidates = [f"http://{line.strip()}" for line in resp.split('\n') if line.strip()][:15]
+            resp = requests.get(PROXY_API_URL, timeout=8).text.strip()
+            candidates = [f"http://{p}" for p in resp.split('\n') if p.strip()][:12]
             logger.info(f"دریافت {len(candidates)} پروکسی تازه")
 
             tested = []
             for proxy_url in candidates:
                 proxy = {"http": proxy_url, "https": proxy_url}
                 try:
-                    test_resp = requests.get(BRS_API_URL, proxies=proxy, timeout=5)
-                    if test_resp.status_code == 200 and 'IR_GOLD_MELTED' in test_resp.text:
-                        tested.append(proxy)
-                        logger.info(f"پروکسی زنده: {proxy_url}")
+                    r = requests.get(BRS_API_URL, proxies=proxy, timeout=4)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if 'gold' in data and any(g.get('symbol') == 'IR_GOLD_MELTED' for g in data['gold']):
+                            tested.append(proxy)
+                            logger.info(f"پروکسی زنده: {proxy_url}")
                 except:
                     pass
             with proxy_lock:
-                live_proxies = tested[:3]  # فقط ۳ تا
-            logger.info(f"پروکسی‌های زنده: {len(live_proxies)}")
+                live_proxies = tested[:3]
+            logger.info(f"تعداد پروکسی‌های زنده: {len(live_proxies)}")
         except Exception as e:
-            logger.error(f"دریافت پروکسی شکست: {e}")
-        time.sleep(120)  # هر ۲ دقیقه
+            logger.error(f"خطا در بروزرسانی پروکسی: {e}")
+        time.sleep(90)
 
-# --- شروع thread بروزرسانی پروکسی ---
+# --- شروع thread ---
 threading.Thread(target=update_proxies, daemon=True).start()
 
 # --- دریافت قیمت ---
@@ -62,26 +64,26 @@ def fetch_gold_price():
 
     # --- brsapi.ir با پروکسی چرخشی ---
     with proxy_lock:
-        proxies_copy = live_proxies[:]
-    if proxies_copy:
-        random.shuffle(proxies_copy)
-        for proxy in proxies_copy:
+        proxies = live_proxies.copy()
+    if proxies:
+        random.shuffle(proxies)
+        for proxy in proxies:
             try:
-                resp = requests.get(BRS_API_URL, proxies=proxy, timeout=10).json()
+                resp = requests.get(BRS_API_URL, proxies=proxy, timeout=8).json()
                 for item in resp.get('gold', []):
                     if item.get('symbol') == 'IR_GOLD_MELTED':
                         price = int(item['price'])
                         change = item.get('change_value', 0)
                         percent = item.get('change_percent', 0)
-                        cached_price = {"price": price, "change": change, "percent": percent, "timestamp": now}
-                        logger.info(f"brsapi.ir قیمت: {price:,} تومان")
+                        cached_price.update({"price": price, "change": change, "percent": percent, "timestamp": now})
+                        logger.info(f"قیمت واقعی brsapi.ir: {price:,} تومان")
                         return price, change, percent
             except Exception as e:
                 logger.warning(f"پروکسی شکست: {e}")
 
     # --- Fallback Nobitex ---
     try:
-        resp = requests.get(NOBITEX_URL, timeout=10).json()
+        resp = requests.get(NOBITEX_URL, timeout=8).json()
         if resp.get('status') == 'ok':
             bids = float(resp['bids'][0][0]) if resp['bids'] else 0
             asks = float(resp['asks'][0][0]) if resp['asks'] else 0
@@ -94,11 +96,21 @@ def fetch_gold_price():
 
     return 45555000, 948000, 2.13
 
-# --- ارسال و ویرایش (همان قبلی) ---
+# --- ارسال پیام ---
 def send_price(chat_id):
     price, change, percent = fetch_gold_price()
-    message = f"💰 **قیمت طلای آب‌شده**\n`{price:,} تومان`\n\n{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({percent:+.2f}%)\n\nکلیک برای بروزرسانی 👇"
-    payload = {'chat_id': chat_id, 'text': message, 'parse_mode': 'Markdown', 'reply_markup': json.dumps(keyboard)}
+    message = (
+        f"💰 **قیمت طلای آب‌شده**\n"
+        f"`{price:,} تومان`\n\n"
+        f"{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({percent:+.2f}%)\n\n"
+        f"کلیک برای بروزرسانی 👇"
+    )
+    payload = {
+        'chat_id': chat_id,
+        'text': message,
+        'parse_mode': 'Markdown',
+        'reply_markup': json.dumps(keyboard)
+    }
     try:
         resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=payload, timeout=10).json()
         if resp.get('ok'):
@@ -106,16 +118,28 @@ def send_price(chat_id):
     except Exception as e:
         logger.error(f"ارسال شکست: {e}")
 
+# --- ویرایش پیام ---
 def edit_price(chat_id, message_id):
     price, change, percent = fetch_gold_price()
-    new_text = f"💰 **قیمت طلای آب‌شده**\n`{price:,} تومان`\n\n{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({percent:+.2f}%)\n\nکلیک برای بروزرسانی 👇"
-    payload = {'chat_id': chat_id, 'message_id': message_id, 'text': new_text, 'parse_mode': 'Markdown', 'reply_markup': json.dumps(keyboard)}
+    new_text = (
+        f"💰 **قیمت طلای آب‌شده**\n"
+        f"`{price:,} تومان`\n\n"
+        f"{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({percent:+.2f}%)\n\n"
+        f"کلیک برای بروزرسانی 👇"
+    )
+    payload = {
+        'chat_id': chat_id,
+        'message_id': message_id,
+        'text': new_text,
+        'parse_mode': 'Markdown',
+        'reply_markup': json.dumps(keyboard)
+    }
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText", data=payload, timeout=10)
     except Exception as e:
         logger.error(f"ویرایش شکست: {e}")
 
-# --- Webhook و setup (همان قبلی) ---
+# --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -129,6 +153,7 @@ def webhook():
         return '', 200
     abort(403)
 
+# --- تنظیم Webhook ---
 @app.before_request
 def setup_webhook():
     global webhook_set
@@ -143,7 +168,7 @@ def setup_webhook():
 
 @app.route('/')
 def home():
-    return "ربات فعال — پروکسی اتومات"
+    return "ربات طلای آب‌شده — پروکسی اتومات"
 
 if __name__ == '__main__':
     app.run()
