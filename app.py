@@ -2,13 +2,9 @@ from flask import Flask, request, abort
 import requests
 import json
 import logging
-import os
-import pytesseract
-from PIL import Image
-import cv2
-import numpy as np
-import talib
-import io
+import time
+import re
+import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -17,90 +13,112 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8296855766:AAEAOO_NA2Q0GROFMKACAVV2ZnkxvDBroWM"
 WEBHOOK_URL = "https://abshodeh.onrender.com/webhook"
-PRICE_FILE = "price.json"
+TRADINGVIEW_SYMBOL_URL = "https://www.tradingview.com/symbols/FARAZGOLD-MAZANE-GOLD/"
 webhook_set = False
-
-# --- بارگذاری قیمت (بدون پیش‌فرض) ---
-def load_price():
-    if os.path.exists(PRICE_FILE):
-        try:
-            with open(PRICE_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get("price")
-        except:
-            pass
-    return None  # بدون قیمت اولیه
-
-price = load_price()
-
-# --- ذخیره قیمت ---
-def save_price(p):
-    global price
-    price = p
-    with open(PRICE_FILE, 'w') as f:
-        json.dump({"price": price}, f)
+price_cache = {"price": None, "change": None, "percent": None, "timestamp": 0}
+CACHE_TIME = 60  # ۱ دقیقه
 
 # --- دکمه‌ها ---
 def get_keyboard():
     return {
         "inline_keyboard": [
-            [{"text": "+۱,۰۰۰,۰۰۰", "callback_data": "add_1000000"},
-             {"text": "+۱۰۰,۰۰۰", "callback_data": "add_100000"},
-             {"text": "+۱۰,۰۰۰", "callback_data": "add_10000"}],
-            [{"text": "-۱۰,۰۰۰", "callback_data": "sub_10000"},
-             {"text": "-۱۰۰,۰۰۰", "callback_data": "sub_100000"},
-             {"text": "-۱,۰۰۰,۰۰۰", "callback_data": "sub_1000000"}],
-            [{"text": "📊 سیگنال", "callback_data": "signal"},
-             {"text": "🔄 بروزرسانی", "callback_data": "refresh"}]
+            [{"text": "💰 قیمت لحظه‌ای", "callback_data": "price"}],
+            [{"text": "📊 تحلیل روند", "callback_data": "analysis"}],
+            [{"text": "📈 سیگنال خرید/فروش", "callback_data": "signal"}]
         ]
     }
 
-# --- سیگنال ---
-def generate_signal(current_price, rsi=None):
-    tp = int(current_price * 1.02)
-    sl = int(current_price * 0.99)
-    rr = "1:2"
-    rsi_text = f"\n📈 RSI: {rsi:.1f}" if rsi else ""
-    
-    if rsi and rsi > 70:
-        return f"📉 **سیگنال فروش**{rsi_text}\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
-    elif rsi and rsi < 30:
-        return f"📈 **سیگنال خرید**{rsi_text}\n\n💰 قیمت: `{current_price:,}`\n\n✅ ورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
-    else:
-        return f"➖ **بدون سیگنال قوی**\n\n💰 قیمت: `{current_price:,}`\n\nورود: `{current_price:,}`\n🎯 TP: `{tp:,}`\n🛑 SL: `{sl:,}`\n\n📊 ریسک/ریوارد: {rr}"
+# --- استخراج قیمت از TradingView ---
+def scrape_tradingview():
+    now = time.time()
+    if now - price_cache["timestamp"] < CACHE_TIME and price_cache["price"]:
+        return price_cache["price"], price_cache["change"], price_cache["percent"]
 
-# --- OCR چارت ---
-def ocr_chart(image_bytes):
     try:
-        image = Image.open(io.BytesIO(image_bytes))
-        img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        text = pytesseract.image_to_string(thresh, config='--psm 6 -c tessedit_char_whitelist=0123456789.,')
-        numbers = [float(x.replace(',', '')) for x in text.split() if x.replace('.', '').replace(',', '').isdigit()]
-        if len(numbers) >= 4:
-            closes = numbers[-20:]
-            rsi = talib.RSI(np.array(closes), timeperiod=14)[-1]
-            return int(closes[-1]), rsi
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(TRADINGVIEW_SYMBOL_URL, headers=headers, timeout=10).text
+        
+        # استخراج قیمت فعلی
+        price_match = re.search(r'"last":\s*"?(\d+(?:\.\d+)?)"?', resp)
+        change_match = re.search(r'"change":\s*"?([+-]?\d+(?:\.\d+)?)"?', resp)
+        percent_match = re.search(r'"change_percent":\s*"?([+-]?\d+(?:\.\d+)?)"?', resp)
+        
+        if price_match:
+            price = int(float(price_match.group(1)))
+            change = int(float(change_match.group(1))) if change_match else 0
+            percent = float(percent_match.group(1)) if percent_match else 0.0
+            
+            price_cache.update({"price": price, "change": change, "percent": percent, "timestamp": now})
+            logger.info(f"TradingView قیمت: {price:,} تومان | تغییر: {change:+,} ({percent:+.2f}%)")
+            return price, change, percent
     except Exception as e:
-        logger.error(f"OCR خطا: {e}")
-    return None, None
+        logger.error(f"Scraping خطا: {e}")
+    
+    return None, None, None
 
-# --- دانلود فایل ---
-def download_file(file_id):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile"
-    resp = requests.post(url, data={'file_id': file_id}).json()
-    if resp.get('ok'):
-        file_path = resp['result']['file_path']
-        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-        return requests.get(download_url).content
-    return None
+# --- قیمت لحظه‌ای ---
+def get_price_text():
+    price, change, percent = scrape_tradingview()
+    if price is None:
+        return "❌ دریافت قیمت موقتاً ممکن نیست. دوباره تلاش کنید."
+    
+    return f"💰 **قیمت طلای آب‌شده (MAZANE/GOLD)**\n\n" \
+           f"`{price:,} تومان`\n\n" \
+           f"{'📈' if change >= 0 else '📉'} تغییر: `{change:+,} تومان` ({percent:+.2f}%)"
+
+# --- تحلیل روند ---
+def get_analysis_text():
+    price, change, percent = scrape_tradingview()
+    if price is None:
+        return "❌ دریافت داده برای تحلیل ممکن نیست."
+    
+    rsi_status = "نزدیک اشباع خرید (احتمال اصلاح)" if percent > 2 else "در محدوده خنثی" if abs(percent) <= 1 else "در روند قوی"
+    trend = "📈 **صعودی**" if change > 0 else "📉 **نزولی**" if change < 0 else "➖ **خنثی**"
+    
+    return f"📊 **تحلیل روند فعلی**\n\n" \
+           f"💰 قیمت: `{price:,} تومان`\n" \
+           f"{trend} | تغییر ۲۴ساعته: `{change:+,} تومان` ({percent:+.2f}%)\n\n" \
+           f"🔍 **وضعیت RSI**: {rsi_status}\n" \
+           f"📌 **حمایت**: ~{int(price * 0.98):,} تومان\n" \
+           f"📌 **مقاومت**: ~{int(price * 1.02):,} تومان\n\n" \
+           f"_داده‌ها از TradingView (MAZANE/GOLD)_"
+
+# --- سیگنال خرید/فروش ---
+def get_signal_text():
+    price, change, percent = scrape_tradingview()
+    if price is None:
+        return "❌ دریافت داده برای سیگنال ممکن نیست."
+    
+    tp = int(price * 1.02)
+    sl = int(price * 0.99)
+    rr = "1:2"
+    
+    if percent >= 1.5:
+        signal = "📈 **سیگنال خرید**"
+        entry = price
+    elif percent <= -1.5:
+        signal = "📉 **سیگنال فروش**"
+        entry = price
+    else:
+        signal = "➖ **بدون سیگنال قوی**"
+        entry = price
+    
+    return f"{signal}\n\n" \
+           f"💰 **قیمت فعلی**: `{price:,} تومان`\n\n" \
+           f"✅ **ورود**: `{entry:,}`\n" \
+           f"🎯 **حد سود (TP)**: `{tp:,}` (+2%)\n" \
+           f"🛑 **حد زیان (SL)**: `{sl:,}` (-1%)\n\n" \
+           f"📊 **ریسک/ریوارد**: {rr}\n" \
+           f"_بر اساس تغییر ۲۴ساعته و روند فعلی_"
 
 # --- ارسال پیام ---
-def send_message(chat_id, text, reply_markup=None):
-    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
-    if reply_markup:
-        payload['reply_markup'] = json.dumps(reply_markup)
+def send_message(chat_id, text):
+    payload = {
+        'chat_id': chat_id,
+        'text': text,
+        'parse_mode': 'Markdown',
+        'reply_markup': json.dumps(get_keyboard())
+    }
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=payload, timeout=10)
     except Exception as e:
@@ -114,64 +132,28 @@ def webhook():
     
     update = request.get_json()
     
-    if 'message' in update:
-        msg = update['message']
-        chat_id = msg['chat']['id']
-        
-        # اسکرین‌شات
-        if 'photo' in msg:
-            file_id = msg['photo'][-1]['file_id']
-            image_bytes = download_file(file_id)
-            if image_bytes:
-                new_price, rsi = ocr_chart(image_bytes)
-                if new_price:
-                    save_price(new_price)
-                    signal = generate_signal(new_price, rsi)
-                    send_message(chat_id, signal, get_keyboard())
-                else:
-                    send_message(chat_id, "❌ چارت قابل خواندن نیست. عدد بنویسید یا دکمه بزنید.")
-            return '', 200
-        
-        # قیمت دستی (عدد)
-        text = msg.get('text', '').strip()
-        if text.isdigit() and len(text) >= 5:
-            new_price = int(text)
-            save_price(new_price)
-            signal = generate_signal(new_price)
-            send_message(chat_id, signal, get_keyboard())
-            return '', 200
-        
-        if text == '/start':
-            send_message(chat_id, 
-                "📸 **اسکرین‌شات چارت بفرستید** یا **قیمت بنویسید**\n\n"
-                "تنظیم با دکمه 👇", get_keyboard())
-
+    if 'message' in update and update['message'].get('text', '').strip() == '/start':
+        chat_id = update['message']['chat']['id']
+        send_message(chat_id, 
+            "🤖 **ربات قیمت طلای آب‌شده (TradingView)**\n\n"
+            "از دکمه‌های زیر استفاده کنید:\n\n"
+            "داده‌ها از نماد **MAZANE/GOLD** در TradingView")
+    
     elif 'callback_query' in update:
         cb = update['callback_query']
         chat_id = cb['message']['chat']['id']
         data = cb['data']
-        global price
-
-        if price is None:
-            send_message(chat_id, "⚠️ ابتدا قیمت تنظیم کنید.")
-            return '', 200
-
-        if data.startswith("add_") or data.startswith("sub_"):
-            amount = int(data.split("_")[1])
-            if data.startswith("sub_"): amount = -amount
-            price += amount
-            save_price(price)
-            signal = generate_signal(price)
-            send_message(chat_id, signal, get_keyboard())
         
+        if data == "price":
+            text = get_price_text()
+        elif data == "analysis":
+            text = get_analysis_text()
         elif data == "signal":
-            signal = generate_signal(price)
-            send_message(chat_id, signal)
+            text = get_signal_text()
+        else:
+            text = "دکمه نامعتبر."
         
-        elif data == "refresh":
-            signal = generate_signal(price)
-            send_message(chat_id, signal, get_keyboard())
-        
+        send_message(chat_id, text)
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
                       data={'callback_query_id': cb['id']})
     
@@ -191,7 +173,7 @@ def setup_webhook():
 
 @app.route('/')
 def home():
-    return "ربات تحلیل چارت + سیگنال (بدون قیمت پیش‌فرض)"
+    return "ربات قیمت طلا — TradingView MAZANE/GOLD"
 
 if __name__ == '__main__':
     app.run()
