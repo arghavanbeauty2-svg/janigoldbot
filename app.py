@@ -12,10 +12,9 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8296855766:AAEAOO_NA2Q0GROFMKACAVV2ZnkxvDBroWM"
 WEBHOOK_URL = "https://abshodeh.onrender.com/webhook"
 PRICE_FILE = "price.json"
-keyboard = {"inline_keyboard": [[{"text": "🔄 بروزرسانی", "callback_data": "get_price"}]]}
 webhook_set = False
 
-# --- بارگذاری قیمت از فایل ---
+# --- بارگذاری قیمت ---
 def load_price():
     if os.path.exists(PRICE_FILE):
         try:
@@ -24,7 +23,7 @@ def load_price():
                 return data.get("price", 45555000), data.get("previous", 45555000)
         except:
             pass
-    return 45555000, 45555000  # پیش‌فرض
+    return 45555000, 45555000
 
 # --- ذخیره قیمت ---
 def save_price(price, previous):
@@ -33,7 +32,22 @@ def save_price(price, previous):
 
 price, previous_price = load_price()
 
-# --- بررسی سیگنال ---
+# --- دکمه‌ها ---
+def get_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "+۱,۰۰۰,۰۰۰", "callback_data": "add_1000000"},
+             {"text": "+۱۰۰,۰۰۰", "callback_data": "add_100000"},
+             {"text": "+۱۰,۰۰۰", "callback_data": "add_10000"}],
+            [{"text": "-۱۰,۰۰۰", "callback_data": "sub_10000"},
+             {"text": "-۱۰۰,۰۰۰", "callback_data": "sub_100000"},
+             {"text": "-۱,۰۰۰,۰۰۰", "callback_data": "sub_1000000"}],
+            [{"text": "🔄 بروزرسانی", "callback_data": "refresh"},
+             {"text": "📊 سیگنال", "callback_data": "signal"}]
+        ]
+    }
+
+# --- سیگنال ---
 def check_signal():
     if previous_price == 0:
         return "بدون تغییر قبلی"
@@ -46,62 +60,74 @@ def check_signal():
         return f"➖ بدون سیگنال ({change_percent:+.2f}%)"
 
 # --- ارسال قیمت ---
-def send_price(chat_id, show_signal=False):
+def send_price(chat_id, message_id=None):
     global price, previous_price
     change = price - previous_price
     change_percent = (change / previous_price * 100) if previous_price else 0
     message = f"💰 **قیمت طلای آب‌شده**\n`{price:,} تومان`\n\n"
     if change != 0:
         message += f"{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({change_percent:+.2f}%)\n\n"
-    if show_signal:
-        message += check_signal() + "\n\n"
-    message += "کلیک برای بروزرسانی 👇"
-    payload = {'chat_id': chat_id, 'text': message, 'parse_mode': 'Markdown', 'reply_markup': json.dumps(keyboard)}
+    message += check_signal() + "\n\n"
+    message += "تنظیم قیمت با دکمه 👇"
+
+    payload = {
+        'chat_id': chat_id,
+        'text': message,
+        'parse_mode': 'Markdown',
+        'reply_markup': json.dumps(get_keyboard())
+    }
+    if message_id:
+        payload['message_id'] = message_id
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+    else:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    
     try:
-        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=payload, timeout=10).json()
+        resp = requests.post(url, data=payload, timeout=10).json()
         if resp.get('ok'):
-            logger.info(f"پیام ارسال شد به {chat_id}")
+            logger.info(f"پیام به {chat_id}")
     except Exception as e:
         logger.error(f"ارسال شکست: {e}")
-
-# --- ویرایش پیام ---
-def edit_price(chat_id, message_id):
-    send_price(chat_id)  # همان تابع، اما edit
-    payload = {'chat_id': chat_id, 'message_id': message_id, 'text': "در حال بروزرسانی...", 'parse_mode': 'Markdown'}
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText", data=payload, timeout=10)
-    send_price(chat_id)  # ارسال جدید
 
 # --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         update = request.get_json()
+        
+        # /start یا اولین پیام
         if 'message' in update:
-            msg = update['message']
-            chat_id = msg['chat']['id']
-            text = msg.get('text', '').strip()
-            if text == '/start':
-                send_price(chat_id, show_signal=True)
-            elif text.startswith('/setprice '):
-                try:
-                    new_price = int(text.split()[1])
-                    global price, previous_price
-                    previous_price = price
-                    price = new_price
-                    save_price(price, previous_price)
-                    send_price(chat_id, show_signal=True)
-                    logger.info(f"قیمت دستی تنظیم شد: {price:,}")
-                except:
-                    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                                  data={'chat_id': chat_id, 'text': "❌ فرمت: /setprice 45600000"})
-            elif text == '/signal':
+            chat_id = update['message']['chat']['id']
+            send_price(chat_id)
+
+        # دکمه‌ها
+        elif 'callback_query' in update:
+            cb = update['callback_query']
+            chat_id = cb['message']['chat']['id']
+            message_id = cb['message']['message_id']
+            data = cb['data']
+            global price, previous_price
+
+            if data.startswith("add_") or data.startswith("sub_"):
+                amount = int(data.split("_")[1])
+                if data.startswith("sub_"):
+                    amount = -amount
+                previous_price = price
+                price += amount
+                save_price(price, previous_price)
+                send_price(chat_id, message_id)
+            
+            elif data == "refresh":
+                send_price(chat_id, message_id)
+            
+            elif data == "signal":
                 signal = check_signal()
                 requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                               data={'chat_id': chat_id, 'text': signal, 'parse_mode': 'Markdown'})
-        elif 'callback_query' in update and update['callback_query']['data'] == 'get_price':
-            cb = update['callback_query']
-            edit_price(cb['message']['chat']['id'], cb['message']['message_id'])
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery", data={'callback_query_id': cb['id']})
+
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+                          data={'callback_query_id': cb['id']})
+        
         return '', 200
     abort(403)
 
@@ -119,7 +145,7 @@ def setup_webhook():
 
 @app.route('/')
 def home():
-    return "ربات قیمت دستی + سیگنال فعال"
+    return "ربات دکمه‌ای قیمت + سیگنال"
 
 if __name__ == '__main__':
     app.run()
